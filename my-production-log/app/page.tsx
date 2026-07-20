@@ -69,13 +69,13 @@ const [notifySupervisor, setNotifySupervisor] = useState(false);
   };
 
   // 第2-8工序的中间缺陷填写区
-  function IntermediateDefectSection({ stage }) {
+  function IntermediateDefectSection({ stage: any }) {
     return (
       <div className="space-y-3">
         <textarea 
           placeholder={`Describe process defects found at ${stage}...`} 
           className="w-full p-2 border border-red-300 rounded text-sm bg-white"
-          rows="2"
+          rows={2}
         />
         <input type="file" accept="image/*" capture="environment" className="text-xs text-gray-600" />
       </div>
