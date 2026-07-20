@@ -59,7 +59,7 @@ const [notifySupervisor, setNotifySupervisor] = useState(false);
   };
 
   // 切换当前工序缺陷状态
- const handleCurrentStageDefectToggle = (val: any) => {
+  const handleCurrentStageDefectToggle = (val) => {
     setHasDefect(val);
   };
 
@@ -69,8 +69,7 @@ const [notifySupervisor, setNotifySupervisor] = useState(false);
   };
 
   // 第2-8工序的中间缺陷填写区
- function IntermediateDefectSection({ stage }: { stage: any }) {
-    
+  function IntermediateDefectSection({ stage }) {
     return (
       <div className="space-y-3">
         <textarea 
