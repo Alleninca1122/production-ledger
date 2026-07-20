@@ -59,7 +59,7 @@ const [notifySupervisor, setNotifySupervisor] = useState(false);
   };
 
   // 切换当前工序缺陷状态
-  const handleCurrentStageDefectToggle = (val) => {
+  const handleCurrentStageDefectToggle = (val: any) => {
     setHasDefect(val);
   };
 
