@@ -71,7 +71,6 @@ const [notifySupervisor, setNotifySupervisor] = useState(false);
   // 第2-8工序的中间缺陷填写区
  function IntermediateDefectSection({ stage }: { stage: any }) {
     
-  } }) {
     return (
       <div className="space-y-3">
         <textarea 
