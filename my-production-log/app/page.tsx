@@ -1,832 +1,502 @@
-'use client';
+import React, { useState, useEffect } from 'react';
 
-import { useState, useEffect } from 'react';
-
-interface WorkpieceItem {
-  type: string;
-  otherType: string;
-  pcs: string;          // 初始 Loading 数量
-  stageVerifiedPcs?: Record<string, string>; // 按工序独立存储的复核数量
-}
-
-interface ClientEntry {
+// ==========================================
+// 1. 类型定义 (Types & Interfaces)
+// ==========================================
+export interface ClientEntry {
   clientName: string;
-  batchNo: string;
-  workpieces: WorkpieceItem[];
+  orderNo: string;
+  partDescription: string;
+  pcsLoaded: number | string;
+  verifiedPcs?: number | string;
 }
 
-interface SkidEntry {
-  pcs: string;
-  netWeight: string;
+export interface SkidEntry {
+  pcs: number | string;
+  netWeight: number | string;
   location: string;
 }
 
-interface BatchRecord {
+export interface GalvanizingRecord {
   whitesheetNo: string;
   yellowsheetNo: string;
   rackNo: string;
-  loadingOperator: string;
-  loadingShift: string;
+  shift: string;
   clientEntries: ClientEntry[];
   hasDefect: boolean;
   defectDetails: string;
   notifySupervisor: boolean;
-  // Unloading 扩展字段
+  supervisorEmail: string;
+  // Stage logs
+  stageOperators?: Record<string, string>;
+  stageNotes?: Record<string, string>;
+  // Unloading specific
   unloadingOperator?: string;
   unloadingShift?: string;
   qualityStatus?: string;
   skids?: SkidEntry[];
 }
 
-export default function Home() {
-  const stages = [
-    '1. Loading', '2. Degreasing', '3. Pickling', '4. Rinsing', 
-    '5. Fluxing', '6. Drying', '7. Dipping', '8. Cooling', '9. Unloading'
-  ];
-  const [currentStage, setCurrentStage] = useState<string>('1. Loading');
-  const [searchWhitesheet, setSearchWhitesheet] = useState('');
-  const [supervisorEmail, setSupervisorEmail] = useState('');
-const [notifySupervisor, setNotifySupervisor] = useState(false);  
-// 提取当前工序的数字序号（如 '9. Unloading' -> 9）
-  const getCurrentStageNumber = () => {
-    const match = currentStage.match(/^(\d+)/);
+const STAGES = [
+  'Stage 1: Racking / Loading',
+  'Stage 2: Degreasing',
+  'Stage 3: Acid Pickling',
+  'Stage 4: Fluxing',
+  'Stage 5: Drying',
+  'Stage 6: Hot-Dip Galvanizing',
+  'Stage 7: Cooling / Quenching',
+  'Stage 8: Inspection & Touch-up',
+  'Stage 9: Unloading & Packaging',
+];
+
+// 占位子组件：中转阶段/卸货阶段缺陷挂载模块
+const IntermediateDefectSection: React.FC<{ stage: string }> = ({ stage }) => (
+  <div className="p-3 bg-amber-100/50 rounded text-xs text-amber-900">
+    <p className="font-bold">Log defect observed at {stage}</p>
+    <textarea
+      rows={2}
+      placeholder="Describe defects noticed prior to or during this stage..."
+      className="w-full mt-2 p-2 border rounded border-amber-300 bg-white"
+    />
+  </div>
+);
+
+const UnloadingDefectSection: React.FC = () => (
+  <div className="p-3 bg-amber-100/50 rounded text-xs text-amber-900">
+    <p className="font-bold">Final Quality Defect / Discrepancy Log (Unloading)</p>
+    <textarea
+      rows={2}
+      placeholder="Describe final surface finish issues or missing pieces..."
+      className="w-full mt-2 p-2 border rounded border-amber-300 bg-white"
+    />
+  </div>
+);
+
+// ==========================================
+// 2. 主表单组件 (Main Entry Form)
+// ==========================================
+export default function GalvanizingEntryForm() {
+  // --- Basic Header State ---
+  const [whitesheetNo, setWhitesheetNo] = useState<string>('');
+  const [yellowsheetNo, setYellowsheetNo] = useState<string>('');
+  const [rackNo, setRackNo] = useState<string>('');
+  const [shift, setShift] = useState<string>('Morning');
+  const [currentStage, setCurrentStage] = useState<string>(STAGES[0]);
+
+  // --- Client Orders & Workpieces State ---
+  const [clientEntries, setClientEntries] = useState<ClientEntry[]>([
+    { clientName: '', orderNo: '', partDescription: '', pcsLoaded: '' },
+  ]);
+
+  // --- Stage 1 Defect State ---
+  const [hasDefect, setHasDefect] = useState<boolean>(false);
+  const [defectDetails, setDefectDetails] = useState<string>('');
+  const [notifySupervisor, setNotifySupervisor] = useState<boolean>(false);
+  const [supervisorEmail, setSupervisorEmail] = useState<string>('');
+  const [defectPhotos, setDefectPhotos] = useState<File[]>([]);
+
+  // --- Stages 2-8 Process Log State ---
+  const [stageOperator, setStageOperator] = useState<string>('');
+  const [stageNotes, setStageNotes] = useState<string>('');
+
+  // --- Stage 9 Unloading State ---
+  const [unloadingOperator, setUnloadingOperator] = useState<string>('');
+  const [unloadingShift, setUnloadingShift] = useState<string>('');
+  const [qualityStatus, setQualityStatus] = useState<string>('Pass');
+  const [skids, setSkids] = useState<SkidEntry[]>([
+    { pcs: '', netWeight: '', location: '' },
+  ]);
+
+  // --- Upstream Defect Tracking Toggle per Stage ---
+  const [upstreamDefects, setUpstreamDefects] = useState<Record<string, boolean>>({});
+
+  // --- Helpers for Active Stage Detection ---
+  const getCurrentStageNumber = (): number => {
+    const match = currentStage.match(/Stage (\d+)/);
     return match ? parseInt(match[1], 10) : 1;
   };
 
-  // 判断当前工序是否有缺陷
-  const hasCurrentStageDefect = () => {
-    return hasDefect; 
-  };
+  const isInitialLoading = getCurrentStageNumber() === 1;
+  const isUnloading = getCurrentStageNumber() === 9;
 
-  // 切换当前工序缺陷状态
-  const handleCurrentStageDefectToggle = (val: any) => {
-    setHasDefect(val);
-  };
-
-  // 获取当前工序缺陷标题
-  const getCurrentStageDefectTitle = () => {
-    return `FLAG DEFECT FOR ${currentStage.toUpperCase()}`;
-  };
-
-  // 第2-8工序的中间缺陷填写区
-  function IntermediateDefectSection({ stage: any }) {
-    return (
-      <div className="space-y-3">
-        <textarea 
-          placeholder={`Describe process defects found at ${stage}...`} 
-          className="w-full p-2 border border-red-300 rounded text-sm bg-white"
-          rows={2}
-        />
-        <input type="file" accept="image/*" capture="environment" className="text-xs text-gray-600" />
-      </div>
-    );
-  }
-
-  // 第9工序（Unloading）的卸货缺陷填写区
-  function UnloadingDefectSection() {
-    return (
-      <div className="space-y-3">
-        <textarea 
-          placeholder="Describe upstream defects found during unloading..." 
-          className="w-full p-2 border border-red-300 rounded text-sm bg-white"
-          rows="2"
-        />
-        <input type="file" accept="image/*" capture="environment" className="text-xs text-gray-600" />
-      </div>
-    );
-  }
-  // 本地存储备份
-  const [localStore, setLocalStore] = useState<Record<string, BatchRecord>>({});
-const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files;
-    if (files && files.length > 0) {
-      console.log("Selected files:", files);
+  // --- LocalStorage Store Fetching ---
+  const getLocalStore = (): Record<string, GalvanizingRecord> => {
+    try {
+      const stored = localStorage.getItem('galvanizing_records_v4');
+      return stored ? JSON.parse(stored) : {};
+    } catch {
+      return {};
     }
   };
-  useEffect(() => {
-    const saved = localStorage.getItem('galvanizing_records_v4');
-    if (saved) {
-      try { setLocalStore(JSON.parse(saved)); } catch (e) {}
+
+  const handleFetchRecord = () => {
+    if (!whitesheetNo.trim()) {
+      alert('Please enter a valid White Sheet # to fetch.');
+      return;
     }
-  }, []);
+    const store = getLocalStore();
+    const record = store[whitesheetNo.trim()];
+    if (record) {
+      setYellowsheetNo(record.yellowsheetNo || '');
+      setRackNo(record.rackNo || '');
+      setShift(record.shift || 'Morning');
+      setClientEntries(record.clientEntries || []);
+      setHasDefect(record.hasDefect || false);
+      setDefectDetails(record.defectDetails || '');
+      setNotifySupervisor(record.notifySupervisor || false);
+      setSupervisorEmail(record.supervisorEmail || '');
+      alert(`Record for White Sheet #${whitesheetNo} loaded successfully!`);
+    } else {
+      alert(`No record found for White Sheet #${whitesheetNo}.`);
+    }
+  };
 
-  // 1. Loading 数据状态
-  const [whitesheetNo, setwhitesheetNo] = useState('');
-  const [yellowsheetNo, setyellowsheetNo] = useState('');
-  const [rackNo, setRackNo] = useState('');
-  const [loadingOperator, setLoadingOperator] = useState('');
-  const [loadingShift, setLoadingShift] = useState('');
-
-  // 动态多客户与多工件列表
-  const [clientEntries, setClientEntries] = useState<ClientEntry[]>([
-    { clientName: '', batchNo: '', workpieces: [{ type: '', otherType: '', pcs: '', stageVerifiedPcs: {} }] }
-  ]);
-
-  const [hasDefect, setHasDefect] = useState(false);
-  const [defectDetails, setDefectDetails] = useState('');
-
-  // 2. 中间阶段状态
-  const [stageOperator, setStageOperator] = useState('');
-  const [stageNotes, setStageNotes] = useState('');
-
-  // 3. Unloading 数据状态（ Skid 动态列表设计）
-  const [unloadingOperator, setUnloadingOperator] = useState('');
-  const [unloadingShift, setUnloadingShift] = useState('');
-  const [qualityStatus, setQualityStatus] = useState('Pass');
-  const [skids, setSkids] = useState<SkidEntry[]>([
-    { pcs: '', netWeight: '', location: '' }
-  ]);
-
-  // 预设工件类型
-  const workpieceTypes = [
-    'Anchor', 'Angle', 'Beam', 'Bracket', 'Frame', 
-    'Grating', 'Ladder', 'Mesh', 'Mixed', 'Pipe', 
-    'Plate', 'Pole', 'Railing', 'Rebar', 'Rod', 
-    'Tube', 'Washer', 'Others'
-  ];
-
-  // 增删客户与工件 Handlers
+  // --- Dynamic Handlers for Client Entries ---
   const addClientEntry = () => {
-    setClientEntries([...clientEntries, { clientName: '', batchNo: '', workpieces: [{ type: '', otherType: '', pcs: '', stageVerifiedPcs: {} }] }]);
-  };
-  const removeClientEntry = (clientIndex: number) => {
-    setClientEntries(clientEntries.filter((_, idx) => idx !== clientIndex));
-  };
-  const updateClientInfo = (clientIndex: number, field: keyof ClientEntry, value: any) => {
-    const updated = [...clientEntries];
-    updated[clientIndex] = { ...updated[clientIndex], [field]: value };
-    setClientEntries(updated);
-  };
-  const addWorkpiece = (clientIndex: number) => {
-    const updated = [...clientEntries];
-    updated[clientIndex].workpieces.push({ type: '', otherType: '', pcs: '', stageVerifiedPcs: {} });
-    setClientEntries(updated);
-  };
-  const removeWorkpiece = (clientIndex: number, wpIndex: number) => {
-    const updated = [...clientEntries];
-    updated[clientIndex].workpieces = updated[clientIndex].workpieces.filter((_, idx) => idx !== wpIndex);
-    setClientEntries(updated);
-  };
-  const updateWorkpiece = (clientIndex: number, wpIndex: number, field: keyof WorkpieceItem, value: string) => {
-    const updated = [...clientEntries];
-    updated[clientIndex].workpieces[wpIndex] = { ...updated[clientIndex].workpieces[wpIndex], [field]: value };
-    setClientEntries(updated);
+    setClientEntries((prev) => [
+      ...prev,
+      { clientName: '', orderNo: '', partDescription: '', pcsLoaded: '' },
+    ]);
   };
 
-  // 专门更新当前工序独立复核数量的函数
-  const updateStageVerifiedPcs = (clientIndex: number, wpIndex: number, value: string) => {
-    const updated = [...clientEntries];
-    const item = updated[clientIndex].workpieces[wpIndex];
-    const stageMap = { ...(item.stageVerifiedPcs || {}) };
-    stageMap[currentStage] = value;
-    updated[clientIndex].workpieces[wpIndex] = { ...item, stageVerifiedPcs: stageMap };
-    setClientEntries(updated);
+  const removeClientEntry = (index: number) => {
+    setClientEntries((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // Unloading Skid 动态控制 Handlers
+  const updateClientEntry = (
+    index: number,
+    field: keyof ClientEntry,
+    value: string | number
+  ) => {
+    setClientEntries((prev) => {
+      const updated = [...prev];
+      updated[index] = { ...updated[index], [field]: value };
+      return updated;
+    });
+  };
+
+  // --- Dynamic Handlers for Skid Entries ---
   const addSkidEntry = () => {
-    setSkids([...skids, { pcs: '', netWeight: '', location: '' }]);
+    setSkids((prev) => [...prev, { pcs: '', netWeight: '', location: '' }]);
   };
+
   const removeSkidEntry = (index: number) => {
-    setSkids(skids.filter((_, idx) => idx !== index));
-  };
-  const updateSkidEntry = (index: number, field: keyof SkidEntry, value: string) => {
-    const updated = [...skids];
-    updated[index] = { ...updated[index], [field]: value };
-    setSkids(updated);
+    setSkids((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // 自动计算汇总数量与净重
-  const getRackLoadedTotalPcs = () => {
-    return clientEntries.reduce((sum, client) => {
-      return sum + client.workpieces.reduce((sub, item) => sub + (parseInt(item.pcs, 10) || 0), 0);
-    }, 0);
+  const updateSkidEntry = (
+    index: number,
+    field: keyof SkidEntry,
+    value: string | number
+  ) => {
+    setSkids((prev) => {
+      const updated = [...prev];
+      updated[index] = { ...updated[index], [field]: value };
+      return updated;
+    });
   };
 
-  const getClientTotalPcs = (client: ClientEntry) => {
-    return client.workpieces.reduce((sum, item) => sum + (parseInt(item.pcs, 10) || 0), 0);
-  };
-  
-  const getClientTotalVerifiedPcs = (client: ClientEntry) => {
-    return client.workpieces.reduce((sum, item) => {
-      const val = item.stageVerifiedPcs?.[currentStage] || '';
-      return sum + (parseInt(val, 10) || 0);
-    }, 0);
+  // --- File Upload Handler ---
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      setDefectPhotos(Array.from(e.target.files));
+    }
   };
 
-  const getTotalSkidPcs = () => {
-    return skids.reduce((sum, skid) => sum + (parseInt(skid.pcs, 10) || 0), 0);
-  };
-
-  const getTotalSkidNetWeight = () => {
-    return skids.reduce((sum, skid) => sum + (parseFloat(skid.netWeight) || 0), 0);
-  };
-
-{/* 热浸镀锌北美行业标准视觉与物理损伤缺陷术语库 */}
-  const standardGalvanizingDefects = [
-    { id: "surface_contamination", label: "Surface Contamination / Marker Residue" }, // 油漆/记号笔污染拒镀
-    { id: "bare_black_spots", label: "Bare Spots / Black Spots " }, // 漏镀 / 局部黑斑
-    { id: "vent_pocket_residue", label: "Trapped Flux / Vent Pocket Residue " }, // 死角残留/排气不良积碳
-    { id: "blistering_flaking", label: "Coating Blistering / Flaking" }, //  (镀层起泡 / 剥落露底)
-    { id: "excessive_dross_tumors", label: "Excessive Dross / Zinc Tumors " }, //  锌渣夹杂 / 严重锌瘤
-    { id: "surface_roughness", label: "Severe Surface Roughness " }, // 表面严重粗糙不均
-    { id: "physical_deformation", label: "Physical Impact Damage / Deformation " }, // 物理撞击变形
-    { id: "impact_coating_loss", label: "Impact Coating Chipping / Stripping " } // 撞击导致镀层脱落
-  ];
-
-  function UnloadingDefectSection() {
-    const [flagDefect, setFlagDefect] = useState(false);
-    const [sendEmailAlert, setSendEmailAlert] = useState(false);
-
-    return (
-      <div className="space-y-4 pt-3 border-t border-amber-200 mt-3">
-        {/* 唯一的勾选开关 */}
-        <div className="flex items-center space-x-2">
-          <input 
-            type="checkbox" 
-            id="flag_unloading_defect_direct"
-            checked={flagDefect}
-            onChange={(e) => setFlagDefect(e.target.checked)}
-            className="w-4 h-4 text-amber-600 border-gray-300 rounded cursor-pointer" 
-          />
-          <label htmlFor="flag_unloading_defect_direct" className="text-xs font-bold uppercase tracking-wider text-amber-900 cursor-pointer">
-            Report Upstream Defect | Stage 9 - Unloading
-          </label>
-        </div>
-
-        {flagDefect && (
-          <div className="space-y-4 bg-amber-50/60 p-3.5 border border-amber-300 rounded-lg">
-            <div className="text-xs font-bold uppercase tracking-wider text-amber-900 border-b border-amber-200 pb-1">
-             DEFECT REPORTING & PHOTO EVIDENCE (STAGE 9 -  UNLOADING)
-            </div>
-
-            {clientEntries.length > 0 ? (
-              clientEntries.map((client, idx) => (
-                <div key={idx} className="bg-white p-3 border border-amber-300 rounded shadow-sm space-y-3">
-                  <div className="text-xs font-bold tracking-wider text-blue-900 border-b border-gray-100 pb-1">
-                    CLIENT ITEM #{idx + 1} &mdash; {client.clientName || "UNNAMED CLIENT"} (BATCH: {client.batchNo || "N/A"})
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-bold uppercase text-gray-700 mb-2">
-                      SELECT WORKPIECE TYPE & SPECIFIC DEFECTS
-                    </label>
-                    
-                    {client.workpieces && client.workpieces.length > 0 ? (
-                      <div className="space-y-3">
-                        {client.workpieces.map((wp, wpIdx) => (
-                          <div key={wpIdx} className="bg-amber-50/50 p-2.5 border border-amber-200 rounded space-y-2">
-                            <label className="flex items-center space-x-2 text-xs font-bold text-amber-900 cursor-pointer">
-                              <input type="checkbox" className="w-4 h-4 text-amber-600 border-gray-300 rounded" />
-                              <span>Workpiece Type: {wp.type || "Unspecified Type"} (Loaded Pcs: {wp.pcs || 0})</span>
-                            </label>
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 pl-6 pt-1">
-                              {standardGalvanizingDefects.map((defect) => (
-                                <label key={defect.id} className="flex items-center space-x-2 text-xs text-gray-800 cursor-pointer">
-                                  <input type="checkbox" className="w-3.5 h-3.5 text-amber-600 border-gray-300 rounded" />
-                                  <span className="font-medium">{defect.label}</span>
-                                </label>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-xs text-gray-500 italic p-2 bg-gray-50 rounded">
-                        No workpiece types defined for this client item yet.
-                      </div>
-                    )}
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-bold uppercase text-gray-700 mb-1">
-                      Other Upstream Defect
-                    </label>
-                    <input 
-                      type="text" 
-                      placeholder={`Describe other upstream defect not listed above for Client Item #${idx + 1}...`} 
-                      className="w-full p-2 border border-amber-200 rounded text-xs bg-gray-50"
-                    />
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className="text-xs text-gray-500 italic bg-white p-3 border border-amber-200 rounded">
-                No client items added on this rack yet.
-              </div>
-            )}
-
-            {/* 拍照取证区：常驻显示 */}
-            <div className="bg-white p-3 border border-amber-300 rounded-md space-y-2">
-              <label className="block text-xs font-bold uppercase text-slate-800">
-                ATTACH DEFECT PHOTOS
-              </label>
-              <div className="border-2 border-dashed border-gray-300 rounded-md p-4 text-center bg-gray-50 cursor-pointer hover:border-amber-400">
-                <input type="file" accept="image/*" capture="environment" className="hidden" id="photo_upload_unloading_clean" />
-                <label htmlFor="photo_upload_unloading_clean" className="cursor-pointer text-xs text-blue-600 font-medium">
-                  Capture or Choose Photos
-                </label>
-              </div>
-            </div>
-
-            {/* 可选的主管邮件通知区 */}
-            <div className="space-y-3 pt-2 border-t border-amber-200">
-              <div className="flex items-center space-x-2">
-                <input 
-                  type="checkbox" 
-                  id="email_alert_unloading_clean"
-                  checked={sendEmailAlert}
-                  onChange={(e) => setSendEmailAlert(e.target.checked)}
-                  className="w-4 h-4 text-blue-600 border-gray-300 rounded"
-                />
-                <label htmlFor="email_alert_unloading_clean" className="text-xs font-medium text-gray-800 cursor-pointer">
-                  Send Email Alert to Supervisor (同时发送邮件通知主管)
-                </label>
-              </div>
-
-              {sendEmailAlert && (
-                <div className="space-y-3 pl-6 border-l-2 border-blue-200">
-                  <div className="space-y-1">
-                    <label className="block text-xs font-bold uppercase text-slate-800">
-                      SUPERVISOR EMAIL ADDRESS (主管邮箱)
-                    </label>
-                    <div 
-                      className="text-xs text-blue-600 cursor-pointer hover:underline inline-block font-medium"
-                      onClick={() => setSupervisorEmail("ajay@ebcometalfinishing.com")}
-                    >
-                      Click to auto-fill: ajay@ebcometalfinishing.com
-                    </div>
-                    <input 
-                      type="email" 
-                      placeholder="e.g. ajay@ebcometalfinishing.com" 
-                      value={supervisorEmail}
-                      onChange={(e) => setSupervisorEmail(e.target.value)}
-                      className="w-full p-2.5 border border-slate-300 rounded-md text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                    />
-                  </div>
-
-                  <button 
-                    type="button"
-                    onClick={() => alert("Email sent to supervisor successfully!")}
-                    className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold uppercase rounded shadow transition"
-                  >
-                    Send Email to Supervisor
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
+  // --- Calculation Helpers ---
+  const getRackLoadedTotalPcs = (): number => {
+    return clientEntries.reduce(
+      (sum, item) => sum + (Number(item.pcsLoaded) || 0),
+      0
     );
-  }
-    // 查询记录
-  const handleFetchRecord = async () => {
-    const key = searchWhitesheet.trim();
-    if (!key) {
-      alert('Please enter a White Sheet # to search');
+  };
+
+  const getTotalSkidPcs = (): number => {
+    return skids.reduce((sum, skid) => sum + (Number(skid.pcs) || 0), 0);
+  };
+
+  const getTotalSkidNetWeight = (): number => {
+    return skids.reduce((sum, skid) => sum + (Number(skid.netWeight) || 0), 0);
+  };
+
+  // --- Upstream Defect Toggle Helpers ---
+  const hasCurrentStageDefect = (): boolean => {
+    return !!upstreamDefects[currentStage];
+  };
+
+  const handleCurrentStageDefectToggle = (checked: boolean) => {
+    setUpstreamDefects((prev) => ({ ...prev, [currentStage]: checked }));
+  };
+
+  // --- Submit Handler ---
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!whitesheetNo.trim()) {
+      alert('Please enter a valid White Sheet # before saving.');
       return;
     }
 
-    let targetRecord: BatchRecord | null = null;
+    const localStore = getLocalStore();
 
-    try {
-      const res = await fetch(`/api/galvanizing/records?whitesheetNo=${key}`);
-      if (res.ok) {
-        targetRecord = await res.json();
-      }
-    } catch (e) {}
-
-    if (!targetRecord && localStore[key]) {
-      targetRecord = localStore[key];
-    }
-
-    if (targetRecord) {
-      setwhitesheetNo(targetRecord.whitesheetNo);
-      setyellowsheetNo(targetRecord.yellowsheetNo);
-      setRackNo(targetRecord.rackNo);
-      setLoadingOperator(targetRecord.loadingOperator);
-      setLoadingShift(targetRecord.loadingShift);
-      setClientEntries(targetRecord.clientEntries || []);
-      setHasDefect(targetRecord.hasDefect);
-      setDefectDetails(targetRecord.defectDetails);
-      setNotifySupervisor(targetRecord.notifySupervisor);
-
-      // 读取已有 Unloading 数据（如有）
-      if (targetRecord.unloadingOperator) setUnloadingOperator(targetRecord.unloadingOperator);
-      if (targetRecord.unloadingShift) setUnloadingShift(targetRecord.unloadingShift);
-      if (targetRecord.qualityStatus) setQualityStatus(targetRecord.qualityStatus);
-      if (targetRecord.skids && targetRecord.skids.length > 0) setSkids(targetRecord.skids);
-
-      alert(`Record loaded successfully for ${currentStage}!`);
-    } else {
-      alert(`No record found for White Sheet #${key}. Please create it in Stage 1 first.`);
-    }
-  };
-
-  // 提交保存
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (currentStage === '1. Loading') {
-      if (!whitesheetNo.trim()) {
-        alert('Please enter a White Sheet # before saving.');
-        return;
-      }
-
-      const newRecord: BatchRecord = {
+    if (isInitialLoading) {
+      // Stage 1 - Create or overwrite base batch record
+      const newRecord: GalvanizingRecord = {
         whitesheetNo: whitesheetNo.trim(),
         yellowsheetNo,
         rackNo,
-        loadingOperator,
-        loadingShift,
-        clientEntries,
-        hasDefect,
-        defectDetails,
-        notifySupervisor
-      };
-
-      const updatedStore = { ...localStore, [whitesheetNo.trim()]: newRecord };
-      setLocalStore(updatedStore);
-      localStorage.setItem('galvanizing_records_v4', JSON.stringify(updatedStore));
-
-      alert(`Batch Saved Successfully!\n\nWhite Sheet #: ${whitesheetNo}`);
-
-    } else {
-      const updatedRecord: BatchRecord = {
-        whitesheetNo: whitesheetNo.trim(),
-        yellowsheetNo,
-        rackNo,
-        loadingOperator,
-        loadingShift,
+        shift,
         clientEntries,
         hasDefect,
         defectDetails,
         notifySupervisor,
-        unloadingOperator,
-        unloadingShift,
-        qualityStatus,
-        skids
+        supervisorEmail,
+      };
+      localStore[whitesheetNo.trim()] = newRecord;
+      localStorage.setItem('galvanizing_records_v4', JSON.stringify(localStore));
+      alert(`Batch Record ${whitesheetNo} created successfully!`);
+    } else {
+      // Stages 2-9 - Update existing record
+      const existingRecord = localStore[whitesheetNo.trim()] || {
+        whitesheetNo: whitesheetNo.trim(),
+        yellowsheetNo,
+        rackNo,
+        shift,
+        clientEntries,
+        hasDefect: false,
+        defectDetails: '',
+        notifySupervisor: false,
+        supervisorEmail: '',
       };
 
-      const updatedStore = { ...localStore, [whitesheetNo.trim()]: updatedRecord };
-      setLocalStore(updatedStore);
-      localStorage.setItem('galvanizing_records_v4', JSON.stringify(updatedStore));
+      const stageOperators = existingRecord.stageOperators || {};
+      const stageNotesMap = existingRecord.stageNotes || {};
 
-      if (currentStage === '9. Unloading') {
-        alert(`Unloading Completed!\n\nWhite Sheet #: ${whitesheetNo}\nTotal Skids: ${skids.length}\nTotal Net Weight: ${getTotalSkidNetWeight()} lbs`);
-      } else {
-        alert(`Data for [${currentStage}] saved successfully!`);
-      }
+      if (stageOperator) stageOperators[currentStage] = stageOperator;
+      if (stageNotes) stageNotesMap[currentStage] = stageNotes;
+
+      const updatedRecord: GalvanizingRecord = {
+        ...existingRecord,
+        stageOperators,
+        stageNotes: stageNotesMap,
+        ...(isUnloading && {
+          unloadingOperator,
+          unloadingShift,
+          qualityStatus,
+          skids,
+        }),
+      };
+
+      localStore[whitesheetNo.trim()] = updatedRecord;
+      localStorage.setItem('galvanizing_records_v4', JSON.stringify(localStore));
+      alert(`Status for ${currentStage} saved successfully!`);
     }
   };
 
-  const isInitialLoading = currentStage === '1. Loading';
-  const isUnloading = currentStage === '9. Unloading';
-
   return (
-    <main className="min-h-screen bg-slate-100 p-6 md:p-12">
-      {/* Header & Stage Selector */}
-      <header className="max-w-5xl mx-auto mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b pb-4 border-slate-300">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-800">Galvanizing Production Ledger</h1>
-          <p className="text-slate-500 text-sm mt-1">Full 9-Stage Process Lifecycle Management</p>
+    <main className="max-w-5xl mx-auto p-4 md:p-6 space-y-6 bg-slate-50 min-h-screen text-slate-800">
+      {/* 表单卡片容器 */}
+      <div className="bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden">
+        {/* 顶部标题栏 */}
+        <div className="bg-slate-900 text-white p-5 flex flex-col md:flex-row justify-between md:items-center gap-4">
+          <div>
+            <h1 className="text-xl font-black tracking-wide text-blue-400 uppercase">
+              Hot-Dip Galvanizing Production Log
+            </h1>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Multi-Stage Tracking & Defect Management System
+            </p>
+          </div>
+
+          {/* Stage 切换选择框 */}
+          <div className="flex items-center space-x-2">
+            <span className="text-xs font-bold uppercase text-slate-400">Current Stage:</span>
+            <select
+              value={currentStage}
+              onChange={(e) => setCurrentStage(e.target.value)}
+              className="bg-slate-800 text-white font-bold text-sm px-3 py-2 rounded-lg border border-slate-700 focus:ring-2 focus:ring-blue-500 outline-none"
+            >
+              {STAGES.map((stg) => (
+                <option key={stg} value={stg}>
+                  {stg}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
-        <div className="flex items-center space-x-2 bg-white p-2 rounded-lg border border-slate-300 shadow-sm">
-          <label className="text-xs font-bold uppercase text-slate-600">Active Process Stage:</label>
-          <select
-            value={currentStage}
-            onChange={(e) => setCurrentStage(e.target.value)}
-            className="px-3 py-1.5 font-bold text-sm text-blue-700 bg-slate-50 border rounded focus:ring-2 focus:ring-blue-500 outline-none"
-          >
-            {stages.map((stg) => (
-              <option key={stg} value={stg}>{stg}</option>
-            ))}
-          </select>
-        </div>
-      </header>
+        <form onSubmit={handleSubmit} className="p-6 space-y-6">
+          {/* 1. 基础单号与工架信息 Header */}
+          <div className="p-4 bg-slate-100 rounded-xl border border-slate-200 space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                  White Sheet #
+                </label>
+                <div className="flex space-x-1">
+                  <input
+                    type="text"
+                    placeholder="e.g. WS-9081"
+                    value={whitesheetNo}
+                    onChange={(e) => setWhitesheetNo(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-md font-bold text-slate-800 bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                  {!isInitialLoading && (
+                    <button
+                      type="button"
+                      onClick={handleFetchRecord}
+                      className="px-3 py-2 bg-slate-800 text-white text-xs font-bold rounded-md hover:bg-slate-700"
+                    >
+                      Fetch
+                    </button>
+                  )}
+                </div>
+              </div>
 
-      <div className="max-w-5xl mx-auto space-y-6">
-        {/* Lookup Banner */}
-        {!isInitialLoading && (
-          <div className="bg-blue-50 border-2 border-blue-300 p-4 rounded-xl flex flex-col md:flex-row items-center justify-between gap-4">
-            <div className="flex-1 w-full">
-              <label className="block text-xs font-bold uppercase text-blue-900 mb-1">
-                Lookup White Sheet # for {currentStage}
-              </label>
-              <div className="flex gap-2">
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                  Yellow Sheet #
+                </label>
                 <input
                   type="text"
-                  placeholder="Enter White Sheet # (e.g. 8888)"
-                  value={searchWhitesheet}
-                  onChange={(e) => setSearchWhitesheet(e.target.value)}
-                  className="flex-1 px-3 py-2 border border-blue-300 rounded-md text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white font-semibold"
+                  disabled={!isInitialLoading}
+                  placeholder="e.g. YS-4410"
+                  value={yellowsheetNo}
+                  onChange={(e) => setYellowsheetNo(e.target.value)}
+                  className={`w-full px-3 py-2 border rounded-md text-slate-800 outline-none ${
+                    isInitialLoading ? 'bg-white focus:ring-2 focus:ring-blue-500' : 'bg-slate-200 cursor-not-allowed'
+                  }`}
                 />
-                <button
-                  type="button"
-                  onClick={handleFetchRecord}
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-5 py-2 rounded-md shadow transition"
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                  Rack # / Station
+                </label>
+                <input
+                  type="text"
+                  disabled={!isInitialLoading}
+                  placeholder="e.g. R-12"
+                  value={rackNo}
+                  onChange={(e) => setRackNo(e.target.value)}
+                  className={`w-full px-3 py-2 border rounded-md text-slate-800 outline-none ${
+                    isInitialLoading ? 'bg-white focus:ring-2 focus:ring-blue-500' : 'bg-slate-200 cursor-not-allowed'
+                  }`}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
+                  Racking Shift
+                </label>
+                <select
+                  disabled={!isInitialLoading}
+                  value={shift}
+                  onChange={(e) => setShift(e.target.value)}
+                  className={`w-full px-3 py-2 border rounded-md text-slate-800 outline-none ${
+                    isInitialLoading ? 'bg-white focus:ring-2 focus:ring-blue-500' : 'bg-slate-200 cursor-not-allowed'
+                  }`}
                 >
-                  Fetch Record
-                </button>
+                  <option value="Morning">Morning Shift</option>
+                  <option value="Afternoon">Afternoon Shift</option>
+                  <option value="Night">Night Shift</option>
+                </select>
               </div>
             </div>
           </div>
-        )}
 
-        {/* Main Form */}
-        <form onSubmit={handleSubmit} className="bg-white p-6 rounded-xl shadow-md border border-slate-200 space-y-6">
-          <div className="flex justify-between items-center border-b pb-3">
-            <h2 className="text-xl font-bold text-slate-800">
-              {isInitialLoading ? 'New Batch Entry (Loading)' : `Stage Tracking: ${currentStage}`}
-            </h2>
-            <span className="text-xs font-bold px-3 py-1 rounded bg-blue-100 text-blue-800">
-              Current Stage: {currentStage}
-            </span>
-          </div>
+          {/* 2. Client Orders & Workpieces */}
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold uppercase tracking-wider text-slate-700 border-b pb-2">
+              Client Orders & Workpieces
+            </h3>
 
-          {/* 1. Header Information */}
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-            <div>
-              <label className="block text-xs font-bold uppercase text-slate-600 mb-1">White Sheet #</label>
-              <input
-                type="text"
-                disabled={!isInitialLoading}
-                placeholder="e.g. 8888"
-                value={whitesheetNo}
-                onChange={(e) => setwhitesheetNo(e.target.value)}
-                className={`w-full px-3 py-2 border rounded-md text-slate-800 outline-none ${
-                  !isInitialLoading ? 'bg-slate-100 font-bold cursor-not-allowed' : 'focus:ring-2 focus:ring-blue-500'
-                }`}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-bold uppercase text-slate-600 mb-1">Yellow Sheet #</label>
-              <input
-                type="text"
-                disabled={!isInitialLoading}
-                placeholder="e.g. 865421"
-                value={yellowsheetNo}
-                onChange={(e) => setyellowsheetNo(e.target.value)}
-                className={`w-full px-3 py-2 border rounded-md text-slate-800 outline-none ${
-                  !isInitialLoading ? 'bg-slate-100 cursor-not-allowed' : 'focus:ring-2 focus:ring-blue-500'
-                }`}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-bold uppercase text-slate-600 mb-1">Rack #</label>
-              <input
-                type="text"
-                disabled={!isInitialLoading}
-                placeholder="e.g. 12"
-                value={rackNo}
-                onChange={(e) => setRackNo(e.target.value)}
-                className={`w-full px-3 py-2 border rounded-md text-slate-800 outline-none ${
-                  !isInitialLoading ? 'bg-slate-100 cursor-not-allowed' : 'focus:ring-2 focus:ring-blue-500'
-                }`}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-bold uppercase text-slate-600 mb-1">Loading Operator</label>
-              <input
-                type="text"
-                disabled={!isInitialLoading}
-                placeholder="Operator Name"
-                value={loadingOperator}
-                onChange={(e) => setLoadingOperator(e.target.value)}
-                className={`w-full px-3 py-2 border rounded-md text-slate-800 outline-none ${
-                  !isInitialLoading ? 'bg-slate-100 cursor-not-allowed' : 'focus:ring-2 focus:ring-blue-500'
-                }`}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-bold uppercase text-slate-600 mb-1">Loading Shift</label>
-              <select
-                disabled={!isInitialLoading}
-                value={loadingShift}
-                onChange={(e) => setLoadingShift(e.target.value)}
-                className={`w-full px-3 py-2 border rounded-md text-slate-800 outline-none ${
-                  !isInitialLoading ? 'bg-slate-100 cursor-not-allowed' : 'bg-white focus:ring-2 focus:ring-blue-500'
-                }`}
+            {clientEntries.map((entry, index) => (
+              <div
+                key={index}
+                className="p-4 border rounded-xl bg-white border-slate-200 space-y-3 relative shadow-sm"
               >
-                <option value="" disabled>Please select a shift...</option>
-                <option value="Morning">Morning Shift</option>
-                <option value="Afternoon">Afternoon Shift</option>
-              </select>
-            </div>
-          </div>
-          {/* 2. Dynamic Client Orders & Workpieces */}
-          <div className="space-y-6">
-            <div className="flex justify-between items-center border-b pb-2">
-              <h3 className="text-sm font-bold uppercase text-slate-700 tracking-wider">
-                Client Orders on Rack ({clientEntries.length})
-              </h3>
-            </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-xs font-bold text-slate-500 uppercase">
+                    Order Entry #{index + 1}
+                  </span>
+                  {isInitialLoading && clientEntries.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removeClientEntry(index)}
+                      className="text-xs text-red-600 font-bold hover:underline"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
 
-            {clientEntries.map((client, clientIndex) => {
-              const loadedTotal = getClientTotalPcs(client);
-              const verifiedTotal = getClientTotalVerifiedPcs(client);
-              const isMismatch = !isInitialLoading && verifiedTotal !== 0 && verifiedTotal !== loadedTotal;
-
-              return (
-                <div key={clientIndex} className="bg-slate-50 p-5 rounded-lg border border-slate-300 space-y-4">
-                  <div className="flex justify-between items-center border-b border-slate-200 pb-2">
-                    <span className="text-xs font-bold uppercase text-blue-700 bg-blue-50 px-2 py-1 rounded">
-                      Client Item #{clientIndex + 1}
-                    </span>
-                    {clientEntries.length > 1 && isInitialLoading && (
-                      <button
-                        type="button"
-                        onClick={() => removeClientEntry(clientIndex)}
-                        className="text-xs font-semibold text-red-600 hover:text-red-800 bg-red-100/60 hover:bg-red-100 px-3 py-1 rounded transition"
-                      >
-                        Remove Client Order
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-bold uppercase text-slate-600 mb-1">Client Name</label>
-                      <input
-                        type="text"
-                        disabled={!isInitialLoading}
-                        placeholder="e.g. ABC Steel"
-                        value={client.clientName}
-                        onChange={(e) => updateClientInfo(clientIndex, 'clientName', e.target.value)}
-                        className={`w-full px-3 py-2 border rounded-md text-slate-800 outline-none ${
-                          !isInitialLoading ? 'bg-slate-100 font-semibold cursor-not-allowed' : 'bg-white focus:ring-2 focus:ring-blue-500'
-                        }`}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-bold uppercase text-slate-600 mb-1">Client Batch #</label>
-                      <input
-                        type="text"
-                        disabled={!isInitialLoading}
-                        placeholder="e.g. #2, #3"
-                        value={client.batchNo}
-                        onChange={(e) => updateClientInfo(clientIndex, 'batchNo', e.target.value)}
-                        className={`w-full px-3 py-2 border rounded-md text-slate-800 outline-none ${
-                          !isInitialLoading ? 'bg-slate-100 font-semibold cursor-not-allowed' : 'bg-white focus:ring-2 focus:ring-blue-500'
-                        }`}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Workpieces breakdown */}
-                  <div className="border-t border-slate-200 pt-3 space-y-3">
-                    <label className="block text-xs font-bold uppercase text-slate-600">
-                      Workpiece Breakdown (Types & Quantities)
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
+                      Client Name
                     </label>
-
-                    {client.workpieces.map((item, wpIndex) => {
-                      const currentStageVerifiedVal = item.stageVerifiedPcs?.[currentStage] || '';
-
-                      return (
-                        <div key={wpIndex} className="bg-white p-3 rounded-md border space-y-3">
-                          <div className="flex items-center space-x-3">
-                            <div className="flex-1">
-                              <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                                Workpiece Type
-                              </label>
-                              <select
-                                disabled={!isInitialLoading}
-                                value={item.type}
-                                onChange={(e) => updateWorkpiece(clientIndex, wpIndex, 'type', e.target.value)}
-                                className={`w-full px-3 py-1.5 border rounded text-slate-800 outline-none text-sm font-medium ${
-                                  !isInitialLoading ? 'bg-slate-100 cursor-not-allowed' : 'bg-white focus:ring-2 focus:ring-blue-500'
-                                }`}
-                              >
-                                <option value="" disabled>Please select type...</option>
-                                {workpieceTypes.map((t) => (
-                                  <option key={t} value={t}>{t}</option>
-                                ))}
-                              </select>
-                            </div>
-
-                            <div className={isInitialLoading ? 'w-32' : 'w-28'}>
-                              <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">
-                                {isInitialLoading ? 'Quantity (pcs)' : 'Loaded (pcs)'}
-                              </label>
-                              <input
-                                type="number"
-                                disabled={!isInitialLoading}
-                                placeholder="0"
-                                value={item.pcs}
-                                onChange={(e) => updateWorkpiece(clientIndex, wpIndex, 'pcs', e.target.value)}
-                                className={`w-full px-3 py-1.5 border rounded text-slate-800 outline-none text-sm font-semibold ${
-                                  !isInitialLoading ? 'bg-slate-100 cursor-not-allowed' : 'focus:ring-2 focus:ring-blue-500'
-                                }`}
-                              />
-                            </div>
-
-                            {!isInitialLoading && (
-                              <div className="w-36">
-                                <label className="block text-[10px] font-bold uppercase text-blue-700 mb-1">
-                                  Verified (pcs)
-                                </label>
-                                <input
-                                  type="number"
-                                  placeholder="Re-count"
-                                  value={currentStageVerifiedVal}
-                                  onChange={(e) => updateStageVerifiedPcs(clientIndex, wpIndex, e.target.value)}
-                                  className="w-full px-3 py-1.5 border-2 border-blue-400 bg-blue-50/60 rounded text-slate-900 font-bold outline-none text-sm focus:ring-2 focus:ring-blue-500"
-                                />
-                              </div>
-                            )}
-
-                            {client.workpieces.length > 1 && isInitialLoading && (
-                              <button
-                                type="button"
-                                onClick={() => removeWorkpiece(clientIndex, wpIndex)}
-                                className="mt-4 px-2.5 py-1 text-xs font-semibold text-red-600 bg-red-50 hover:bg-red-100 rounded border border-red-200 transition"
-                              >
-                                Remove
-                              </button>
-                            )}
-                          </div>
-
-                          {item.type === 'Others' && (
-                            <div className="pt-1 border-t border-slate-100">
-                              <label className="block text-[10px] font-bold uppercase text-slate-400 mb-1">Description (Optional)</label>
-                              <input
-                                type="text"
-                                disabled={!isInitialLoading}
-                                placeholder="Description (Optional)"
-                                value={item.otherType}
-                                onChange={(e) => updateWorkpiece(clientIndex, wpIndex, 'otherType', e.target.value)}
-                                className={`w-full px-3 py-1.5 border rounded text-slate-800 outline-none text-sm ${
-                                  !isInitialLoading ? 'bg-slate-100 cursor-not-allowed' : 'bg-slate-50 focus:ring-2 focus:ring-blue-500'
-                                }`}
-                              />
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-
-                    {isInitialLoading && (
-                      <button
-                        type="button"
-                        onClick={() => addWorkpiece(clientIndex)}
-                        className="text-xs font-semibold text-blue-600 hover:text-blue-800 flex items-center space-x-1 pt-1"
-                      >
-                        <span>+ Add Another Workpiece Type for this Client</span>
-                      </button>
-                    )}
+                    <input
+                      type="text"
+                      disabled={!isInitialLoading}
+                      value={entry.clientName}
+                      onChange={(e) => updateClientEntry(index, 'clientName', e.target.value)}
+                      className={`w-full px-2.5 py-1.5 border rounded text-xs text-slate-800 outline-none ${
+                        isInitialLoading ? 'bg-white focus:ring-1 focus:ring-blue-500' : 'bg-slate-100'
+                      }`}
+                    />
                   </div>
 
-                  {/* 底部自动汇总对比栏 */}
-                  <div className="border-t border-slate-200 pt-3">
-                    {isInitialLoading ? (
-                      <div>
-                        <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
-                          Total Quantity (pcs) Auto Sum
-                        </label>
-                        <input
-                          type="number"
-                          readOnly
-                          value={loadedTotal}
-                          className="w-full px-3 py-2 border bg-slate-100 font-bold text-blue-700 rounded-md outline-none cursor-not-allowed"
-                        />
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 bg-white p-3 rounded-lg border">
-                        <div>
-                          <label className="block text-xs font-bold uppercase text-slate-500 mb-1">
-                            Loaded Total (pcs)
-                          </label>
-                          <input
-                            type="number"
-                            readOnly
-                            value={loadedTotal}
-                            className="w-full px-3 py-1.5 border bg-slate-100 font-bold text-slate-700 rounded outline-none cursor-not-allowed"
-                          />
-                        </div>
-                        <div>
-                          <label className={`block text-xs font-bold uppercase mb-1 ${isMismatch ? 'text-red-600' : 'text-blue-700'}`}>
-                            [{currentStage}] Verified Total (pcs) {isMismatch && '⚠️ Discrepancy!'}
-                          </label>
-                          <input
-                            type="number"
-                            readOnly
-                            value={verifiedTotal}
-                            className={`w-full px-3 py-1.5 border font-bold rounded outline-none cursor-not-allowed ${
-                              isMismatch 
-                                ? 'bg-red-50 text-red-700 border-red-300' 
-                                : 'bg-blue-50 text-blue-800 border-blue-200'
-                            }`}
-                          />
-                        </div>
-                      </div>
-                    )}
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
+                      Order / PO #
+                    </label>
+                    <input
+                      type="text"
+                      disabled={!isInitialLoading}
+                      value={entry.orderNo}
+                      onChange={(e) => updateClientEntry(index, 'orderNo', e.target.value)}
+                      className={`w-full px-2.5 py-1.5 border rounded text-xs text-slate-800 outline-none ${
+                        isInitialLoading ? 'bg-white focus:ring-1 focus:ring-blue-500' : 'bg-slate-100'
+                      }`}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
+                      Part Description
+                    </label>
+                    <input
+                      type="text"
+                      disabled={!isInitialLoading}
+                      value={entry.partDescription}
+                      onChange={(e) => updateClientEntry(index, 'partDescription', e.target.value)}
+                      className={`w-full px-2.5 py-1.5 border rounded text-xs text-slate-800 outline-none ${
+                        isInitialLoading ? 'bg-white focus:ring-1 focus:ring-blue-500' : 'bg-slate-100'
+                      }`}
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase text-slate-500 mb-1">
+                      {isInitialLoading ? 'Pcs Loaded' : 'Verified Pcs'}
+                    </label>
+                    <input
+                      type="number"
+                      value={isInitialLoading ? entry.pcsLoaded : entry.verifiedPcs ?? entry.pcsLoaded}
+                      onChange={(e) =>
+                        updateClientEntry(
+                          index,
+                          isInitialLoading ? 'pcsLoaded' : 'verifiedPcs',
+                          e.target.value
+                        )
+                      }
+                      className="w-full px-2.5 py-1.5 border rounded text-xs font-bold text-slate-800 bg-white focus:ring-1 focus:ring-blue-500 outline-none"
+                    />
                   </div>
                 </div>
-              );
-            })}
+              </div>
+            ))}
 
             {isInitialLoading && (
               <button
@@ -839,7 +509,7 @@ const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
             )}
           </div>
 
-          {/* 3. Defect Marking */}
+          {/* 3. Defect Marking (Stage 1 / Racking Only) */}
           {isInitialLoading && (
             <div className="p-4 border rounded-lg bg-red-50/50 border-red-200 space-y-3">
               <label className="flex items-center space-x-2 cursor-pointer">
@@ -849,13 +519,17 @@ const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
                   onChange={(e) => setHasDefect(e.target.checked)}
                   className="h-4 w-4 text-red-600 rounded focus:ring-red-500"
                 />
-                <span className="font-bold text-red-700 text-sm">Flag Quality Defect / Pre-existing Damage</span>
+                <span className="font-bold text-red-700 text-sm">
+                  Flag Quality Defect / Pre-existing Damage
+                </span>
               </label>
 
               {hasDefect && (
-                <div className="space-y-3 pt-2">
+                <div className="space-y-3 pt-2 border-t border-red-200 mt-2">
                   <div>
-                    <label className="block text-xs font-bold uppercase text-red-800 mb-1">Defect Details</label>
+                    <label className="block text-xs font-bold uppercase text-red-800 mb-1">
+                      Defect Details
+                    </label>
                     <textarea
                       rows={2}
                       placeholder="Describe pre-existing damage or surface defect..."
@@ -874,53 +548,58 @@ const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
                     />
                     <span>Send Email Alert to Supervisor</span>
                   </label>
-              {/* 新增：主管邮箱输入框 */}
-<div className="mt-4">
-  <label className="block text-xs font-bold uppercase text-slate-800 mb-1">
-    Supervisor Email Address
-  </label>
-  {/* 快速填充触发点 */}
-  <div 
-    className="mb-2 text-xs text-blue-600 cursor-pointer hover:underline"
-    onClick={() => setSupervisorEmail("ajay@ebcometalfinishing.com")}
-  >
-    Click to auto-fill: ajay@ebcometalfinishing.com
-  </div>
-  <input
-    type="email"
-    placeholder="e.g. ajay@ebcometalfinishing.com"
-    value={supervisorEmail}
-    onChange={(e) => setSupervisorEmail(e.target.value)}
-    className="w-full px-3 py-2 border border-red-300 rounded-md text-slate-800 outline-none focus:ring-2 focus:ring-red-500"
-  />
-</div>
-{/* 新增：照片上传 */}
-<div className="mt-4">
-  <label className="block text-xs font-bold uppercase text-slate-800 mb-1">
-    Attach Defect Photos
-  </label>
-<label className="flex items-center justify-center w-full px-4 py-2 border border-slate-300 rounded-md bg-white text-slate-700 text-sm cursor-pointer hover:bg-slate-50">
-  <span>Capture or Choose Photos</span>
-  <input
-    type="file"
-    accept="image/*"
-    capture="environment"
-    multiple
-    onChange={handleFileChange}
-    className="hidden"
-  />
-</label>
-</div>
-<button
-  className="mt-4 w-full bg-blue-600 text-white py-2 rounded-md font-bold"
-  onClick={() => {
-    const subject = encodeURIComponent("Defect Report");
-    const body = encodeURIComponent(`Defect Details: ${defectDetails}`);
-    window.location.href = `mailto:${supervisorEmail}?subject=${subject}&body=${body}`;
-  }}
->
-  Send Email to Supervisor
-</button>
+
+                  {/* 主管邮箱输入框 */}
+                  <div className="mt-4">
+                    <label className="block text-xs font-bold uppercase text-slate-800 mb-1">
+                      Supervisor Email Address
+                    </label>
+                    <div
+                      className="mb-2 text-xs text-blue-600 cursor-pointer hover:underline"
+                      onClick={() => setSupervisorEmail('ajay@ebcometalfinishing.com')}
+                    >
+                      Click to auto-fill: ajay@ebcometalfinishing.com
+                    </div>
+                    <input
+                      type="email"
+                      placeholder="e.g. ajay@ebcometalfinishing.com"
+                      value={supervisorEmail}
+                      onChange={(e) => setSupervisorEmail(e.target.value)}
+                      className="w-full px-3 py-2 border border-red-300 rounded-md text-slate-800 outline-none focus:ring-2 focus:ring-red-500 bg-white"
+                    />
+                  </div>
+
+                  {/* 照片上传 */}
+                  <div className="mt-4">
+                    <label className="block text-xs font-bold uppercase text-slate-800 mb-1">
+                      Attach Defect Photos {defectPhotos.length > 0 && `(${defectPhotos.length} selected)`}
+                    </label>
+                    <label className="flex items-center justify-center w-full px-4 py-2 border border-slate-300 rounded-md bg-white text-slate-700 text-sm cursor-pointer hover:bg-slate-50">
+                      <span>Capture or Choose Photos</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        multiple
+                        onChange={handleFileChange}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="mt-4 w-full bg-blue-600 text-white py-2 rounded-md font-bold hover:bg-blue-700 transition"
+                    onClick={() => {
+                      const subject = encodeURIComponent(`Defect Report - WS #${whitesheetNo}`);
+                      const body = encodeURIComponent(
+                        `White Sheet #: ${whitesheetNo}\nRack #: ${rackNo}\n\nDefect Details:\n${defectDetails}`
+                      );
+                      window.location.href = `mailto:${supervisorEmail}?subject=${subject}&body=${body}`;
+                    }}
+                  >
+                    Send Email to Supervisor
+                  </button>
                 </div>
               )}
             </div>
@@ -934,7 +613,9 @@ const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-bold uppercase text-blue-800 mb-1">Stage Operator Name</label>
+                  <label className="block text-xs font-bold uppercase text-blue-800 mb-1">
+                    Stage Operator Name
+                  </label>
                   <input
                     type="text"
                     placeholder="Operator Name"
@@ -944,7 +625,9 @@ const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold uppercase text-blue-800 mb-1">Process Notes / Parameters</label>
+                  <label className="block text-xs font-bold uppercase text-blue-800 mb-1">
+                    Process Notes / Parameters
+                  </label>
                   <input
                     type="text"
                     placeholder="e.g. Dipping time, Temperature, Acid conc."
@@ -957,20 +640,24 @@ const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
             </div>
           )}
 
-          {/* 5. Unloading & Skid Tracking Entry (全新以 Skid 为单位的卡片布局) */}
+          {/* 5. Unloading & Skid Tracking Entry (Stage 9) */}
           {isUnloading && (
             <div className="p-5 bg-emerald-50/70 border-2 border-emerald-300 rounded-xl space-y-5">
               <div className="border-b border-emerald-200 pb-2 flex justify-between items-center">
-                <h3 className="text-base font-bold text-emerald-900">Unloading & Skid Tracking Entry</h3>
+                <h3 className="text-base font-bold text-emerald-900">
+                  Unloading & Skid Tracking Entry
+                </h3>
                 <span className="text-xs font-bold bg-emerald-200 text-emerald-900 px-2.5 py-1 rounded-full">
                   Total Skids: {skids.length}
                 </span>
               </div>
 
-              {/* 1. 操作员与质量信息 */}
+              {/* 操作员与质量信息 */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
-                  <label className="block text-xs font-bold uppercase text-emerald-800 mb-1">Unloading Operator</label>
+                  <label className="block text-xs font-bold uppercase text-emerald-800 mb-1">
+                    Unloading Operator
+                  </label>
                   <input
                     type="text"
                     placeholder="Operator Name"
@@ -980,19 +667,26 @@ const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-bold uppercase text-emerald-800 mb-1">Unloading Shift</label>
+                  <label className="block text-xs font-bold uppercase text-emerald-800 mb-1">
+                    Unloading Shift
+                  </label>
                   <select
                     value={unloadingShift}
                     onChange={(e) => setUnloadingShift(e.target.value)}
                     className="w-full px-3 py-2 border rounded-md text-slate-800 bg-white focus:ring-2 focus:ring-emerald-500 outline-none"
                   >
-                    <option value="" disabled>Please select shift...</option>
+                    <option value="" disabled>
+                      Please select shift...
+                    </option>
                     <option value="Morning">Morning Shift</option>
                     <option value="Afternoon">Afternoon Shift</option>
+                    <option value="Night">Night Shift</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-bold uppercase text-emerald-800 mb-1">Quality Inspection Status</label>
+                  <label className="block text-xs font-bold uppercase text-emerald-800 mb-1">
+                    Quality Inspection Status
+                  </label>
                   <select
                     value={qualityStatus}
                     onChange={(e) => setQualityStatus(e.target.value)}
@@ -1006,14 +700,17 @@ const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
                 </div>
               </div>
 
-              {/* 2. 动态 Skid 列表 */}
+              {/* 动态 Skid 列表 */}
               <div className="space-y-4 pt-2">
                 <label className="block text-xs font-bold uppercase text-emerald-900">
                   Skid Breakdown (Quantity, Net Weight & Location)
                 </label>
 
                 {skids.map((skid, index) => (
-                  <div key={index} className="bg-white p-4 rounded-lg border border-emerald-200 shadow-sm space-y-3">
+                  <div
+                    key={index}
+                    className="bg-white p-4 rounded-lg border border-emerald-200 shadow-sm space-y-3"
+                  >
                     <div className="flex justify-between items-center border-b border-slate-100 pb-2">
                       <span className="text-xs font-bold uppercase text-emerald-800 bg-emerald-100 px-2.5 py-0.5 rounded">
                         Skid #{index + 1}
@@ -1048,7 +745,7 @@ const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
                         </label>
                         <input
                           type="number"
-                          placeholder=""
+                          placeholder="lbs"
                           value={skid.netWeight}
                           onChange={(e) => updateSkidEntry(index, 'netWeight', e.target.value)}
                           className="w-full px-3 py-1.5 border rounded text-slate-800 font-semibold outline-none focus:ring-2 focus:ring-emerald-500"
@@ -1080,7 +777,7 @@ const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
                 </button>
               </div>
 
-              {/* 3. 汇总与件数比对 */}
+              {/* 汇总与件数比对 */}
               <div className="bg-emerald-100/60 p-4 rounded-lg border border-emerald-300 grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-xs font-bold uppercase text-slate-600 mb-1">
@@ -1094,12 +791,17 @@ const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
                   />
                 </div>
                 <div>
-                  <label className={`block text-xs font-bold uppercase mb-1 ${
-                    getTotalSkidPcs() !== 0 && getTotalSkidPcs() !== getRackLoadedTotalPcs() ? 'text-red-600' : 'text-emerald-800'
-                  }`}>
-                    Total Unloaded Skids (pcs) {
-                      getTotalSkidPcs() !== 0 && getTotalSkidPcs() !== getRackLoadedTotalPcs() && '⚠️ Discrepancy!'
-                    }
+                  <label
+                    className={`block text-xs font-bold uppercase mb-1 ${
+                      getTotalSkidPcs() !== 0 && getTotalSkidPcs() !== getRackLoadedTotalPcs()
+                        ? 'text-red-600'
+                        : 'text-emerald-800'
+                    }`}
+                  >
+                    Total Unloaded Skids (pcs){' '}
+                    {getTotalSkidPcs() !== 0 &&
+                      getTotalSkidPcs() !== getRackLoadedTotalPcs() &&
+                      '⚠️ Discrepancy!'}
                   </label>
                   <input
                     type="number"
@@ -1119,44 +821,55 @@ const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
                   <input
                     type="number"
                     readOnly
-                   value={Math.round(getTotalSkidNetWeight())}
+                    value={Math.round(getTotalSkidNetWeight())}
                     className="w-full px-3 py-2 border bg-emerald-200 font-bold text-emerald-900 rounded outline-none cursor-not-allowed"
                   />
                 </div>
               </div>
             </div>
           )}
-{/* 仅在第2至第9工序显示统一的上游缺陷报告挂载点，默认不勾选，明确指向历史/上游缺陷 */}
-        {getCurrentStageNumber() >= 2 && (
-          <div className="mt-4 p-4 border border-amber-200 bg-amber-50 rounded-lg space-y-3">
-            <div className="flex items-center space-x-2">
-              <input
-                type="checkbox"
-                id="stageDefectToggle"
-                checked={hasCurrentStageDefect()}
-                onChange={(e) => handleCurrentStageDefectToggle(e.target.checked)}
-                className="w-4 h-4 text-amber-600 border-gray-300 rounded focus:ring-amber-500"
-              />
-              <label htmlFor="stageDefectToggle" className="font-bold text-amber-800 text-sm cursor-pointer">
-                REPORT UPSTREAM / PREVIOUS STAGE DEFECT
-              </label>
-            </div>
 
-            {hasCurrentStageDefect() && (
-              <div className="mt-2 pl-6 space-y-3 border-t border-amber-200 pt-3">
-                {getCurrentStageNumber() >= 2 && getCurrentStageNumber() <= 8 && <IntermediateDefectSection stage={currentStage} />}
-                {getCurrentStageNumber() === 9 && <UnloadingDefectSection />}
+          {/* 上游缺陷报告挂载点（仅在 Stage 2~9 显示） */}
+          {getCurrentStageNumber() >= 2 && (
+            <div className="mt-4 p-4 border border-amber-200 bg-amber-50 rounded-lg space-y-3">
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="stageDefectToggle"
+                  checked={hasCurrentStageDefect()}
+                  onChange={(e) => handleCurrentStageDefectToggle(e.target.checked)}
+                  className="w-4 h-4 text-amber-600 border-gray-300 rounded focus:ring-amber-500"
+                />
+                <label
+                  htmlFor="stageDefectToggle"
+                  className="font-bold text-amber-800 text-sm cursor-pointer"
+                >
+                  REPORT UPSTREAM / PREVIOUS STAGE DEFECT
+                </label>
               </div>
-            )}
-          </div>
-        )}
-          {/* Actions */}
+
+              {hasCurrentStageDefect() && (
+                <div className="mt-2 pl-6 space-y-3 border-t border-amber-200 pt-3">
+                  {getCurrentStageNumber() >= 2 && getCurrentStageNumber() <= 8 && (
+                    <IntermediateDefectSection stage={currentStage} />
+                  )}
+                  {getCurrentStageNumber() === 9 && <UnloadingDefectSection />}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Actions / Submit Section */}
           <div className="flex justify-end space-x-3 border-t pt-4">
             <button
               type="submit"
               className="px-6 py-2.5 font-bold text-white rounded-lg shadow transition bg-blue-600 hover:bg-blue-700"
             >
-              {isInitialLoading ? 'Save & Create Batch Record' : isUnloading ? 'Complete & Close Batch Record' : `Save ${currentStage} Status Log`}
+              {isInitialLoading
+                ? 'Save & Create Batch Record'
+                : isUnloading
+                ? 'Complete & Close Batch Record'
+                : `Save ${currentStage} Status Log`}
             </button>
           </div>
         </form>
